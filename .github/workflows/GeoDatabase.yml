@@ -1,0 +1,100 @@
+name: Publish GeoDatabse mmdb
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 22 * * *'
+
+env:
+  GEOIP_SOURCE_REPO: '8bitsaver/ipinfo-geoip'
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Source code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          path: './'
+
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: "1.21"
+          check-latest: true
+
+      - name: Prepare
+        run: |
+          mkdir -p download
+          echo "TAG_NAME=$(date +"%Y.%m.%d")" >> $GITHUB_ENV
+
+      - name: Download GeoDatabse csv
+        run: |
+          curl --connect-timeout 5 --retry 5 --retry-delay 5 --retry-max-time 25 -sLo country.csv.gz "https://github.com/${{ env.GEOIP_SOURCE_REPO }}/releases/latest/download/country.csv.gz"
+          gzip -d ./country.csv.gz
+          ls -la
+
+      - name: Generate mmdb file
+        run: |
+          cd ${{ github.workspace }}/mmdb_generator
+          go run ./ --csv-in=${{ github.workspace }}/country.csv --mmdb-out=${{ github.workspace }}/country.mmdb
+      
+      - name: Generate mmdb sha256 hash
+        run: |
+          cd ${{ github.workspace }}
+          sha256sum country.mmdb > ${{ github.workspace }}/country.mmdb.sha256sum
+          cp ${{ github.workspace }}/country.mmdb ${{ github.workspace }}/download
+          cp ${{ github.workspace }}/country.mmdb.sha256sum ${{ github.workspace }}/download
+
+      - name: Push to "release" branch
+        run: |
+          cd download
+          git init
+          git config user.name "Epsilon"
+          git config user.email "${{ github.actor_id }}+${{ github.actor }}@users.noreply.github.com"
+          git checkout -b release
+          git add .
+          git commit -m "${{ env.TAG_NAME }}"
+          git remote add origin "https://${{ github.actor }}:${{ github.token }}@github.com/${{ github.repository }}"
+          git push -f origin release
+
+      - name: Upload to Releases
+        uses: softprops/action-gh-release@v1
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        with:
+          tag_name: ${{ env.TAG_NAME }}
+          body: ${{ env.TAG_NAME }}
+          files: |
+            download/country.mmdb
+            download/country.mmdb.sha256sum
+      
+      - name: Remove old Releases
+        uses: dev-drprasad/delete-older-releases@v0.3.2
+        with:
+          keep_latest: 3
+          delete_tags: true
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+      # - name: Upload to Latest Tag
+      #   uses: softprops/action-gh-release@v1
+      #   env:
+      #     GITHUB_TOKEN: ${{ github.token }}
+      #   with:
+      #     tag_name: latest
+      #     body: The latest.
+      #     draft: false
+      #     prerelease: true
+      #     files: |
+      #       download/country.mmdb
+      #       download/country.mmdb.sha256sum
+
+      - name: Remove old Workflow runs records
+        uses: Mattraks/delete-workflow-runs@v2
+        with:
+          token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          retain_days: 3
+          keep_minimum_runs: 3
